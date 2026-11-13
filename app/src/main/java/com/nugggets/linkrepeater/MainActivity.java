@@ -1,9 +1,19 @@
 package com.nugggets.linkrepeater;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.ContentValues;
+import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
+import android.graphics.Typeface;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -15,39 +25,47 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import org.json.JSONObject;
-
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
 
 public class MainActivity extends Activity {
     WebView web;
-    EditText site, link, count, inSel, btnSel, tmSel;
-    TextView status;
-    LinearLayout panel;
-    ScrollView scroll;
+    EditText url;
+    TextView status, logView;
+    ScrollView logScroll;
     SharedPreferences sp;
-
-    EditText field(String hint, String key, String def) {
-        EditText e = new EditText(this);
-        e.setHint(hint);
-        e.setSingleLine(true);
-        e.setText(sp.getString(key, def));
-        panel.addView(e);
-        return e;
-    }
+    final List<String> events = new ArrayList<>();
+    final List<String> snaps = new ArrayList<>();
+    String hookJs = "", snapJs = "";
+    long lastUi = 0;
 
     Button button(String text, View.OnClickListener l, LinearLayout row) {
         Button b = new Button(this);
         b.setText(text);
         b.setAllCaps(false);
+        b.setTextSize(13);
         b.setOnClickListener(l);
         row.addView(b, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         return b;
+    }
+
+    LinearLayout row() {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        return r;
     }
 
     @Override
@@ -55,38 +73,40 @@ public class MainActivity extends Activity {
         super.onCreate(s);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         sp = getSharedPreferences("lr", 0);
+        try {
+            hookJs = readAsset("hook.js");
+            snapJs = readAsset("snap.js");
+        } catch (Exception e) { /* ignore */ }
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
 
-        panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(24, 8, 24, 8);
-        site = field("Адрес сайта (https://...)", "site", "https://");
-        link = field("Ссылка, которую вводить", "link", "");
-        count = field("Сколько раз повторить", "count", "5");
-        inSel = field("CSS-селектор поля (необязательно)", "inSel", "");
-        btnSel = field("CSS-селектор кнопки (необязательно)", "btnSel", "");
-        tmSel = field("CSS-селектор таймера (необязательно)", "tmSel", "");
+        url = new EditText(this);
+        url.setSingleLine(true);
+        url.setHint("Адрес сайта");
+        url.setText(sp.getString("url", "https://"));
+        root.addView(url);
 
-        scroll = new ScrollView(this);
-        scroll.addView(panel);
-        root.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        LinearLayout r1 = row();
+        button("Открыть", v -> openUrl(), r1);
+        button("Снимок", v -> web.evaluateJavascript(snapJs, null), r1);
+        button("Очистить", v -> clearAll(), r1);
+        root.addView(r1);
 
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        button("Открыть", v -> { save(); web.loadUrl(fixUrl(site.getText().toString())); scroll.setVisibility(View.GONE); }, row);
-        button("Старт", v -> start(), row);
-        button("Стоп", v -> stop(), row);
-        button("⚙", v -> scroll.setVisibility(scroll.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE), row);
-        root.addView(row);
+        LinearLayout r2 = row();
+        button("Копировать", v -> copyReport(), r2);
+        button("Сохранить", v -> saveReport(), r2);
+        button("Отправить", v -> shareReport(), r2);
+        button("Лог", v -> toggleLog(), r2);
+        root.addView(r2);
 
         status = new TextView(this);
         status.setPadding(24, 4, 24, 4);
-        status.setText("Откройте сайт, зайдите во вкладку Comments Hearts и нажмите Старт");
+        status.setTextSize(12);
+        status.setText("1) Откройте сайт и войдите  2) зайдите во вкладку  3) нажмите Снимок  4) сделайте нужные действия  5) Сохранить");
         root.addView(status);
 
+        FrameLayout fl = new FrameLayout(this);
         web = new WebView(this);
         WebSettings ws = web.getSettings();
         ws.setJavaScriptEnabled(true);
@@ -94,60 +114,138 @@ public class MainActivity extends Activity {
         ws.setLoadWithOverviewMode(true);
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
-        web.setWebViewClient(new WebViewClient());
-        web.setWebChromeClient(new WebChromeClient());
         web.addJavascriptInterface(new Bridge(), "Android");
-        root.addView(web, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 2f));
+        web.setWebChromeClient(new WebChromeClient());
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageStarted(WebView v, String u, Bitmap f) {
+                addEv("[PAGE start] " + u);
+                v.evaluateJavascript(hookJs, null);
+            }
 
+            @Override
+            public void onPageFinished(WebView v, String u) {
+                addEv("[PAGE done] " + u);
+                v.evaluateJavascript(hookJs, null);
+            }
+        });
+        fl.addView(web, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        logView = new TextView(this);
+        logView.setTextSize(11);
+        logView.setTypeface(Typeface.MONOSPACE);
+        logView.setTextIsSelectable(true);
+        logView.setPadding(16, 8, 16, 8);
+        logScroll = new ScrollView(this);
+        logScroll.setBackgroundColor(0xFFFFFFFF);
+        logScroll.addView(logView);
+        logScroll.setVisibility(View.GONE);
+        fl.addView(logScroll, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        root.addView(fl, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         setContentView(root);
 
-        String u = sp.getString("site", "");
+        String u = sp.getString("url", "");
         if (u.startsWith("http") && u.length() > 8) web.loadUrl(u);
     }
 
-    String fixUrl(String u) {
-        u = u.trim();
+    void openUrl() {
+        String u = url.getText().toString().trim();
         if (!u.startsWith("http")) u = "https://" + u;
-        return u;
+        sp.edit().putString("url", u).apply();
+        logScroll.setVisibility(View.GONE);
+        web.loadUrl(u);
     }
 
-    void save() {
-        sp.edit()
-                .putString("site", site.getText().toString())
-                .putString("link", link.getText().toString())
-                .putString("count", count.getText().toString())
-                .putString("inSel", inSel.getText().toString())
-                .putString("btnSel", btnSel.getText().toString())
-                .putString("tmSel", tmSel.getText().toString())
-                .apply();
+    void clearAll() {
+        synchronized (events) { events.clear(); }
+        synchronized (snaps) { snaps.clear(); }
+        setStatus("Очищено");
     }
 
-    void start() {
-        save();
-        String l = link.getText().toString().trim();
-        if (l.isEmpty()) { setStatus("Введите ссылку в настройках (⚙)"); return; }
-        int n = 5;
-        try { n = Integer.parseInt(count.getText().toString().trim()); } catch (Exception ignored) {}
-        try {
-            JSONObject c = new JSONObject();
-            c.put("link", l);
-            c.put("count", n);
-            c.put("inputSel", inSel.getText().toString().trim());
-            c.put("buttonSel", btnSel.getText().toString().trim());
-            c.put("timerSel", tmSel.getText().toString().trim());
-            String js = "window.__LR=" + c.toString() + ";" + readAsset("script.js");
-            scroll.setVisibility(View.GONE);
-            web.evaluateJavascript(js, null);
-            setStatus("Запущено…");
-        } catch (Exception e) {
-            setStatus("Ошибка: " + e.getMessage());
+    String ts() {
+        return new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
+    }
+
+    void addEv(String s) {
+        int n;
+        synchronized (events) {
+            if (events.size() < 3000) events.add(ts() + " " + s);
+            n = events.size();
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastUi > 800) {
+            lastUi = now;
+            setStatus("Событий записано: " + n + " | снимков: " + snaps.size());
         }
     }
 
-    void stop() {
-        web.evaluateJavascript("window.__lrStop=true;", null);
-        setStatus("Остановлено");
+    String buildReport() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Loop диагностика v2.0\n");
+        sb.append("Время: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date())).append("\n");
+        sb.append("URL: ").append(web.getUrl()).append("\n");
+        sb.append("UA: ").append(web.getSettings().getUserAgentString()).append("\n\n");
+        synchronized (snaps) {
+            for (String x : snaps) sb.append(x).append("\n\n");
+        }
+        sb.append("=== СОБЫТИЯ ===\n");
+        synchronized (events) {
+            int from = Math.max(0, events.size() - 700);
+            for (int i = from; i < events.size(); i++) sb.append(events.get(i)).append("\n");
+        }
+        return sb.toString();
+    }
+
+    void copyReport() {
+        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        cm.setPrimaryClip(ClipData.newPlainText("loop", buildReport()));
+        setStatus("Отчёт скопирован в буфер обмена");
+    }
+
+    void shareReport() {
+        Intent i = new Intent(Intent.ACTION_SEND);
+        i.setType("text/plain");
+        i.putExtra(Intent.EXTRA_TEXT, buildReport());
+        startActivity(Intent.createChooser(i, "Отправить отчёт"));
+    }
+
+    void saveReport() {
+        String rep = buildReport();
+        String name = "loop-report-" + new SimpleDateFormat("MMdd-HHmmss", Locale.US).format(new Date()) + ".txt";
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                ContentValues cv = new ContentValues();
+                cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                cv.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
+                cv.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                Uri u = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                OutputStream os = getContentResolver().openOutputStream(u);
+                os.write(rep.getBytes("UTF-8"));
+                os.close();
+                setStatus("Сохранено в Загрузки: " + name);
+            } else {
+                File f = new File(getExternalFilesDir(null), name);
+                FileOutputStream fo = new FileOutputStream(f);
+                fo.write(rep.getBytes("UTF-8"));
+                fo.close();
+                setStatus("Сохранено: " + f.getAbsolutePath());
+            }
+        } catch (Exception e) {
+            setStatus("Ошибка сохранения: " + e);
+        }
+    }
+
+    void toggleLog() {
+        if (logScroll.getVisibility() == View.VISIBLE) {
+            logScroll.setVisibility(View.GONE);
+        } else {
+            logView.setText(buildReport());
+            logScroll.setVisibility(View.VISIBLE);
+        }
     }
 
     String readAsset(String name) throws Exception {
@@ -166,11 +264,21 @@ public class MainActivity extends Activity {
 
     class Bridge {
         @JavascriptInterface
-        public void log(String m) { setStatus(m); }
+        public void ev(String s) { addEv(s); }
+
+        @JavascriptInterface
+        public void snap(String s) {
+            synchronized (snaps) {
+                snaps.add("=== СНИМОК " + ts() + " ===\n" + s);
+            }
+            setStatus("Снимок получен (всего " + snaps.size() + ")");
+        }
     }
 
     @Override
     public void onBackPressed() {
-        if (web.canGoBack()) web.goBack(); else super.onBackPressed();
+        if (logScroll.getVisibility() == View.VISIBLE) logScroll.setVisibility(View.GONE);
+        else if (web.canGoBack()) web.goBack();
+        else super.onBackPressed();
     }
 }
