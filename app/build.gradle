@@ -5,11 +5,11 @@ android {
     namespace 'com.nugggets.linkrepeater'
     compileSdk 34
     defaultConfig {
-        applicationId "com.nugggets.linkrepeater"
+        applicationId "com.nugggets.loop"
         minSdk 24
         targetSdk 34
-        versionCode 6
-        versionName "3.0"
+        versionCode 7
+        versionName "3.1"
     }
     signingConfigs {
         debug {
