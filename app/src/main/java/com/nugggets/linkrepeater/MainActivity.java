@@ -94,7 +94,7 @@ public class MainActivity extends Activity {
         root.addView(r1);
 
         LinearLayout r2 = row();
-        button("Копировать", v -> copyReport(), r2);
+        button("Копия", v -> copyReport(), r2);
         button("Сохранить", v -> saveReport(), r2);
         button("Отправить", v -> shareReport(), r2);
         button("Лог", v -> toggleLog(), r2);
@@ -112,6 +112,9 @@ public class MainActivity extends Activity {
         ws.setJavaScriptEnabled(true);
         ws.setDomStorageEnabled(true);
         ws.setLoadWithOverviewMode(true);
+        // обычный мобильный Chrome вместо маркеров WebView ("; wv", "Version/4.0")
+        String ua = ws.getUserAgentString().replace("; wv", "").replace("Version/4.0 ", "");
+        ws.setUserAgentString(ua);
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
         web.addJavascriptInterface(new Bridge(), "Android");
@@ -185,7 +188,7 @@ public class MainActivity extends Activity {
 
     String buildReport() {
         StringBuilder sb = new StringBuilder();
-        sb.append("Loop диагностика v2.0\n");
+        sb.append("Loop диагностика v2.1\n");
         sb.append("Время: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date())).append("\n");
         sb.append("URL: ").append(web.getUrl()).append("\n");
         sb.append("UA: ").append(web.getSettings().getUserAgentString()).append("\n\n");
