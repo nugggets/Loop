@@ -188,7 +188,7 @@ public class MainActivity extends Activity {
 
     String buildReport() {
         StringBuilder sb = new StringBuilder();
-        sb.append("Loop диагностика v2.1\n");
+        sb.append("Loop диагностика v2.2\n");
         sb.append("Время: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date())).append("\n");
         sb.append("URL: ").append(web.getUrl()).append("\n");
         sb.append("UA: ").append(web.getSettings().getUserAgentString()).append("\n\n");
