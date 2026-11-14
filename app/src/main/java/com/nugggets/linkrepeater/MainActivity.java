@@ -14,6 +14,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
+import android.text.InputType;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -43,9 +44,10 @@ import java.util.Locale;
 
 public class MainActivity extends Activity {
     WebView web;
-    EditText url;
+    EditText url, count;
     TextView status, logView;
     ScrollView logScroll;
+    LinearLayout diag;
     SharedPreferences sp;
     final List<String> events = new ArrayList<>();
     final List<String> snaps = new ArrayList<>();
@@ -89,21 +91,34 @@ public class MainActivity extends Activity {
 
         LinearLayout r1 = row();
         button("Открыть", v -> openUrl(), r1);
-        button("Снимок", v -> web.evaluateJavascript(snapJs, null), r1);
-        button("Очистить", v -> clearAll(), r1);
+        button("Лог", v -> toggleLog(), r1);
+        button("⚙", v -> diag.setVisibility(diag.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE), r1);
         root.addView(r1);
 
         LinearLayout r2 = row();
-        button("Копия", v -> copyReport(), r2);
-        button("Сохранить", v -> saveReport(), r2);
-        button("Отправить", v -> shareReport(), r2);
-        button("Лог", v -> toggleLog(), r2);
+        count = new EditText(this);
+        count.setInputType(InputType.TYPE_CLASS_NUMBER);
+        count.setHint("Сколько раз");
+        count.setSingleLine(true);
+        count.setText(sp.getString("count", "5"));
+        r2.addView(count, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        button("Повторять", v -> startRepeat(), r2);
+        button("Стоп", v -> stopRepeat(), r2);
         root.addView(r2);
+
+        diag = row();
+        button("Снимок", v -> web.evaluateJavascript(snapJs, null), diag);
+        button("Очистить", v -> clearAll(), diag);
+        button("Копия", v -> copyReport(), diag);
+        button("Сохранить", v -> saveReport(), diag);
+        button("Отправить", v -> shareReport(), diag);
+        diag.setVisibility(View.GONE);
+        root.addView(diag);
 
         status = new TextView(this);
         status.setPadding(24, 4, 24, 4);
         status.setTextSize(12);
-        status.setText("1) Откройте сайт и войдите  2) зайдите во вкладку  3) нажмите Снимок  4) сделайте нужные действия  5) Сохранить");
+        status.setText("Введите адрес сайта и нажмите «Открыть». Один раз сделайте всё вручную (ссылка → кнопки), дальше приложение повторит само.");
         root.addView(status);
 
         FrameLayout fl = new FrameLayout(this);
@@ -163,6 +178,21 @@ public class MainActivity extends Activity {
         web.loadUrl(u);
     }
 
+    void startRepeat() {
+        int n = 5;
+        try { n = Integer.parseInt(count.getText().toString().trim()); } catch (Exception ignored) {}
+        if (n < 1) n = 1;
+        sp.edit().putString("count", String.valueOf(n)).apply();
+        logScroll.setVisibility(View.GONE);
+        setStatus("Запускаю повтор: " + n + " раз…");
+        web.evaluateJavascript("window.__lrRepeat && window.__lrRepeat(" + n + ");", null);
+    }
+
+    void stopRepeat() {
+        web.evaluateJavascript("window.__lrStop=true;", null);
+        setStatus("Остановлено");
+    }
+
     void clearAll() {
         synchronized (events) { events.clear(); }
         synchronized (snaps) { snaps.clear(); }
@@ -180,15 +210,15 @@ public class MainActivity extends Activity {
             n = events.size();
         }
         long now = System.currentTimeMillis();
-        if (now - lastUi > 800) {
+        if (now - lastUi > 800 && s.startsWith("[PAGE")) {
             lastUi = now;
-            setStatus("Событий записано: " + n + " | снимков: " + snaps.size());
+            setStatus("Событий записано: " + n);
         }
     }
 
     String buildReport() {
         StringBuilder sb = new StringBuilder();
-        sb.append("Loop диагностика v2.2\n");
+        sb.append("Loop диагностика v3.0\n");
         sb.append("Время: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date())).append("\n");
         sb.append("URL: ").append(web.getUrl()).append("\n");
         sb.append("UA: ").append(web.getSettings().getUserAgentString()).append("\n\n");
@@ -268,6 +298,12 @@ public class MainActivity extends Activity {
     class Bridge {
         @JavascriptInterface
         public void ev(String s) { addEv(s); }
+
+        @JavascriptInterface
+        public void learned(String s) { setStatus(s); }
+
+        @JavascriptInterface
+        public void prog(String s) { setStatus(s); }
 
         @JavascriptInterface
         public void snap(String s) {
